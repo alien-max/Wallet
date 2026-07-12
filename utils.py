@@ -1,27 +1,61 @@
 import os
-import re
 import json
 import base64
-import getpass
+import sqlite3
+from contextlib import contextmanager
 from eth_account import Account
 
-ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wallets.db")
+NATIVE_SYMBOLS = {
+    "ETH": "ETH",
+    "POL": "POL",
+    "BNB": "BNB",
+    "ARB": "ETH",
+    "AVAX": "AVAX",
+}
 
-def ask_password(confirm: bool = False) -> str:
-    pwd = getpass.getpass("🔑 Enter Password: ")
-    if confirm:
-        pwd2 = getpass.getpass("🔑 Confirm Password: ")
-        if pwd != pwd2:
-            raise ValueError("Passwords are not same.")
-    if len(pwd) < 8:
+@contextmanager
+def get_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+def init_db():
+    with get_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wallets (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                address TEXT NOT NULL UNIQUE,
+                keystore TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS networks (
+                code    TEXT PRIMARY KEY,
+                rpc_url TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+    try:
+        os.chmod(DB_PATH, 0o600)
+    except OSError: pass
+
+def validate_password(password: str) -> None:
+    if not password or len(password) < 8:
         raise ValueError("Password length should be more than 8 characters.")
-    return pwd
 
 def encrypt_private_key(private_key: str, password: str) -> str:
     keystore_dict = Account.encrypt(private_key, password)
     keystore_json = json.dumps(keystore_dict)
-    encoded = base64.b64encode(keystore_json.encode("utf-8")).decode("utf-8")
-    return encoded
+    return base64.b64encode(keystore_json.encode("utf-8")).decode("utf-8")
 
 def decrypt_private_key(encoded_keystore: str, password: str) -> str:
     keystore_json = base64.b64decode(encoded_keystore.encode("utf-8")).decode("utf-8")
@@ -32,87 +66,60 @@ def decrypt_private_key(encoded_keystore: str, password: str) -> str:
         raise ValueError("Password is wrong.")
     return "0x" + private_key_bytes.hex()
 
-def _read_env_lines():
-    if not os.path.exists(ENV_PATH):
-        return []
-    with open(ENV_PATH, "r", encoding="utf-8") as f:
-        return f.readlines()
-
-def _write_env_lines(lines):
-    with open(ENV_PATH, "w", encoding="utf-8") as f:
-        f.writelines(lines)
-    try:
-        os.chmod(ENV_PATH, 0o600)
-    except OSError:
-        pass
-
 def list_wallets():
-    lines = _read_env_lines()
-    wallets = {}
-    pattern_addr = re.compile(r"^WALLET_ADDRESS_(\d+)=(.*)$")
-    pattern_key = re.compile(r"^WALLET_KEY_(\d+)=(.*)$")
-    for line in lines:
-        line = line.strip()
-        m1 = pattern_addr.match(line)
-        m2 = pattern_key.match(line)
-        if m1:
-            idx = int(m1.group(1))
-            wallets.setdefault(idx, {})["address"] = m1.group(2)
-        elif m2:
-            idx = int(m2.group(1))
-            wallets.setdefault(idx, {})["keystore"] = m2.group(2)
-    result = []
-    for idx in sorted(wallets.keys()):
-        w = wallets[idx]
-        if "address" in w and "keystore" in w:
-            result.append({"index": idx, "address": w["address"], "keystore": w["keystore"]})
-    return result
+    with get_connection() as conn:
+        rows = conn.execute("SELECT id, address, keystore FROM wallets ORDER BY id").fetchall()
+    return [
+        {"index": r["id"], "address": r["address"], "keystore": r["keystore"]}
+        for r in rows
+    ]
 
-def add_wallet(address: str, encoded_keystore: str):
-    wallets = list_wallets()
-    next_idx = (max([w["index"] for w in wallets]) + 1) if wallets else 1
-    lines = _read_env_lines()
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
-    lines.append(f"WALLET_ADDRESS_{next_idx}={address}\n")
-    lines.append(f"WALLET_KEY_{next_idx}={encoded_keystore}\n")
-    _write_env_lines(lines)
-    return next_idx
+def get_wallet(wallet_id: int):
+    with get_connection() as conn:
+        row = conn.execute("SELECT id, address, keystore FROM wallets WHERE id = ?", (wallet_id,)).fetchone()
+    if not row:
+        return None
+    return {"index": row["id"], "address": row["address"], "keystore": row["keystore"]}
 
-NATIVE_SYMBOLS = {
-    "ETH": "ETH",
-    "POL": "POL/MATIC",
-    "BNB": "BNB",
-    "ARB": "ETH",
-    "AVAX": "AVAX",
-}
+def add_wallet(address: str, encoded_keystore: str) -> int:
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO wallets (address, keystore) VALUES (?, ?)",
+            (address, encoded_keystore),
+        )
+        conn.commit()
+        return cur.lastrowid
 
 def list_networks():
-    lines = _read_env_lines()
-    networks = {}
-    pattern = re.compile(r"^([A-Z0-9]+)_RPC_URL=(.*)$")
-    for line in lines:
-        line = line.strip()
-        m = pattern.match(line)
-        if m:
-            networks[m.group(1)] = m.group(2)
-    return networks
+    with get_connection() as conn:
+        rows = conn.execute("SELECT code, rpc_url FROM networks ORDER BY code").fetchall()
+    return {r["code"]: r["rpc_url"] for r in rows}
 
-def choose_network():
+def add_network(code: str, rpc_url: str) -> str:
+    code = code.strip().upper()
+    if not code or not rpc_url:
+        raise ValueError("Both code and rpc_url are required.")
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO networks (code, rpc_url) VALUES (?, ?)
+            ON CONFLICT(code) DO UPDATE SET rpc_url = excluded.rpc_url
+            """,
+            (code, rpc_url),
+        )
+        conn.commit()
+    return code
+
+def delete_network(code: str) -> bool:
+    code = code.strip().upper()
+    with get_connection() as conn:
+        cur = conn.execute("DELETE FROM networks WHERE code = ?", (code,))
+        conn.commit()
+        return cur.rowcount > 0
+
+def get_network(code: str):
     networks = list_networks()
-    if not networks:
-        raise ValueError("No RPC found")
-    codes = list(networks.keys())
-    print("=== Chains ===")
-    for i, code in enumerate(codes, 1):
-        symbol = NATIVE_SYMBOLS.get(code, code)
-        print(f"[{i}] {code}  ({symbol})")
-    choice = input("Enter chain ID: ").strip()
-    try:
-        idx = int(choice) - 1
-        if idx < 0:
-            raise ValueError
-        code = codes[idx]
-    except (ValueError, IndexError):
-        raise ValueError("Invalid ID.")
+    code = code.strip().upper()
+    if code not in networks:
+        raise ValueError(f"Network '{code}' not found.")
     return code, networks[code]

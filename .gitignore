@@ -1,4 +1,3 @@
 *.pyc
-*.env
+*wallets.db
 *.DS_Store
-*env
