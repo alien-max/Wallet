@@ -28,9 +28,10 @@ def init_db():
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS wallets (
-                id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                address TEXT NOT NULL UNIQUE,
-                keystore TEXT NOT NULL
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                address     TEXT NOT NULL UNIQUE,
+                keystore    TEXT NOT NULL,
+                name        TEXT NOT NULL
             )
             """
         )
@@ -66,26 +67,31 @@ def decrypt_private_key(encoded_keystore: str, password: str) -> str:
         raise ValueError("Password is wrong.")
     return "0x" + private_key_bytes.hex()
 
+def count_wallets() -> int:
+    with get_connection() as conn:
+        row = conn.execute("SELECT COUNT(*) FROM wallets").fetchone()
+    return row[0]
+
 def list_wallets():
     with get_connection() as conn:
-        rows = conn.execute("SELECT id, address, keystore FROM wallets ORDER BY id").fetchall()
+        rows = conn.execute("SELECT id, address, keystore, name FROM wallets ORDER BY id").fetchall()
     return [
-        {"index": r["id"], "address": r["address"], "keystore": r["keystore"]}
+        {"index": r["id"], "address": r["address"], "keystore": r["keystore"], "name": r["name"]}
         for r in rows
     ]
 
 def get_wallet(wallet_id: int):
     with get_connection() as conn:
-        row = conn.execute("SELECT id, address, keystore FROM wallets WHERE id = ?", (wallet_id,)).fetchone()
+        row = conn.execute("SELECT id, address, keystore, name FROM wallets WHERE id = ?", (wallet_id,)).fetchone()
     if not row:
         return None
-    return {"index": row["id"], "address": row["address"], "keystore": row["keystore"]}
+    return {"index": row["id"], "address": row["address"], "keystore": row["keystore"], "name": row["name"]}
 
-def add_wallet(address: str, encoded_keystore: str) -> int:
+def add_wallet(address: str, encoded_keystore: str, name: str) -> int:
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO wallets (address, keystore) VALUES (?, ?)",
-            (address, encoded_keystore),
+            "INSERT INTO wallets (address, keystore, name) VALUES (?, ?, ?)",
+            (address, encoded_keystore, name),
         )
         conn.commit()
         return cur.lastrowid

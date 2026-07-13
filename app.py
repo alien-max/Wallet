@@ -54,9 +54,12 @@ def build_native_transfer_tx(w3: Web3, chain_id: int, from_address: str, to_addr
 
 def page_generate_wallet():
     st.header("🆕 Generate New Wallet")
-    st.caption("Creates a new EVM keypair and stores the private key encrypted (Keystore v3).")
+
+    wallets = utils.count_wallets()
+    placeholder = f"Account {wallets+1}"
 
     with st.form("generate_wallet_form", clear_on_submit=True):
+        name = st.text_input("Wallet name", placeholder=placeholder)
         password = st.text_input("Password", type="password")
         password_confirm = st.text_input("Confirm Password", type="password")
         submitted = st.form_submit_button("Generate Wallet")
@@ -70,6 +73,9 @@ def page_generate_wallet():
         except ValueError as e:
             st.error(f"❌ {e}")
             return
+        
+        if not name:
+            name = placeholder
 
         acct = Account.create()
         private_key = acct.key.hex()
@@ -79,9 +85,10 @@ def page_generate_wallet():
             encoded_keystore = utils.encrypt_private_key(private_key, password)
         private_key = None
 
-        idx = utils.add_wallet(address, encoded_keystore)
+        idx = utils.add_wallet(address, encoded_keystore, name)
         st.success("✅ Wallet saved.")
         st.write(f"**ID:** {idx}")
+        st.write(f"**Name:** {name}")
         st.write(f"**Address:** `{address}`")
 
 def page_wallets_and_balances():
@@ -93,7 +100,7 @@ def page_wallets_and_balances():
         return
 
     st.subheader("Saved Wallets")
-    st.table([{"ID": w["index"], "Address": w["address"]} for w in wallets])
+    st.table([{"ID": w["index"], "Name": w["name"], "Address": w["address"]} for w in wallets])
 
     networks = utils.list_networks()
     if not networks:
@@ -115,9 +122,9 @@ def page_wallets_and_balances():
             try:
                 balance_wei = w3.eth.get_balance(Web3.to_checksum_address(w["address"]))
                 balance_native = w3.from_wei(balance_wei, "ether")
-                rows.append({"ID": w["index"], "Address": w["address"], "Balance": f"{balance_native} {symbol}"})
+                rows.append({"ID": w["index"], "Name": w["name"], "Address": w["address"], "Balance": f"{balance_native} {symbol}"})
             except Exception as e:
-                rows.append({"ID": w["index"], "Address": w["address"], "Balance": f"Failed: {e}"})
+                rows.append({"ID": w["index"], "Name": w["name"], "Address": w["address"], "Balance": f"Failed: {e}"})
         st.table(rows)
 
 def page_transfer():
@@ -137,7 +144,7 @@ def page_transfer():
     network_code = st.selectbox("Network", codes, format_func=lambda c: f"{c} ({utils.NATIVE_SYMBOLS.get(c, c)})", key="tr_network")
     symbol = utils.NATIVE_SYMBOLS.get(network_code, network_code)
 
-    wallet_labels = {f"[{w['index']}] {w['address']}": w for w in wallets}
+    wallet_labels = {f"[{w['name']}] {w['address']}": w for w in wallets}
     sender_label = st.selectbox("Sender wallet", list(wallet_labels.keys()))
     sender = wallet_labels[sender_label]
 
